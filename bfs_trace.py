@@ -199,18 +199,8 @@ def smooth(line, r=3):
     return out
 
 
-def to_svg(lines, width=3):
-    xs = [x for l in lines for x, _ in l]
-    ys = [y for l in lines for _, y in l]
-    d = " ".join("M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in l) for l in lines)
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min(xs) - 5:.0f} {min(ys) - 5:.0f} '
-            f'{max(xs) - min(xs) + 10:.0f} {max(ys) - min(ys) + 10:.0f}">'
-            f'<path d="{d}" fill="none" stroke="black" stroke-width="{width}" '
-            f'stroke-linecap="round" stroke-linejoin="round"/></svg>\n')
-
-
 def trace_at(x, y, quit_):
-    """Trace the stroke under screen point (x, y). Returns False if Esc was pressed mid-drawing."""
+    """Trace the stroke under screen point (x, y). Returns False if a was pressed mid-drawing."""
     import Quartz
 
     shot = pyautogui.screenshot()
@@ -266,15 +256,12 @@ def trace_at(x, y, quit_):
             post(UP, *line[-1])
     finally:
         pyautogui.mouseUp()
-    name = time.strftime("trace_%H%M%S.svg")
-    with open(name, "w") as f:
-        f.write(to_svg(lines))
-    print(f"Xong. Đã lưu {name}")
+    print("Xong.")
     return True
 
 
 def main():
-    """Loop: click a stroke -> it gets traced -> click the next one. Esc quits, also mid-drawing."""
+    """Loop: click a stroke -> it gets traced -> click the next one. Pressing a quits, also mid-drawing."""
     import threading
     import Quartz
     from pynput import keyboard, mouse
@@ -301,9 +288,9 @@ def main():
     # Both started once and never stopped: pynput's stop() leaves the event tap installed but
     # unserviced, which swallowed our mouse-downs. Their daemon threads die with the script.
     mouse.Listener(darwin_intercept=intercept).start()
-    keyboard.Listener(on_press=lambda k: quit_.set() if k == keyboard.Key.esc else None).start()
+    keyboard.Listener(on_press=lambda k: quit_.set() if getattr(k, "char", None) in ("a", "A") else None).start()
 
-    print("Bấm Esc bất cứ lúc nào để thoát (hoặc đưa chuột vào góc màn hình).")
+    print("Bấm phím a bất cứ lúc nào để thoát (hoặc đưa chuột vào góc màn hình).")
     while True:
         print("\nClick vào nét chữ cần đồ...")
         pos.clear()
@@ -312,10 +299,10 @@ def main():
         while not picked.wait(0.1):
             if quit_.is_set():
                 armed.clear()
-                print("Đã thoát (Esc).")
+                print("Đã thoát (a).")
                 return
         if not trace_at(*pos[0], quit_):
-            print("Đã dừng giữa chừng và thoát (Esc).")
+            print("Đã dừng giữa chừng và thoát (a).")
             return
 
 
@@ -342,7 +329,6 @@ def self_test():
     assert sm[0] == stair[0] and sm[-1] == stair[-1]
     # raw stair swings x-y between 0 and 1 around the ideal line x-y=0.5
     assert all(abs(px - py - 0.5) <= 0.15 for px, py in sm[3:-3]), "staircase not ironed out"
-    assert to_svg([[(0, 0), (1, 2)]]).count("<path") == 1
 
     # dim chalkboard: faint stroke only ~30 darker than a gray-green board whose color is within TOL of it
     dim = Image.new("RGB", (200, 100), (85, 90, 80))
