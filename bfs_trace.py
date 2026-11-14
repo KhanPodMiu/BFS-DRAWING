@@ -209,36 +209,10 @@ def to_svg(lines, width=3):
             f'stroke-linecap="round" stroke-linejoin="round"/></svg>\n')
 
 
-def wait_click():
-    # Swallow the picking click so it never reaches the app (a pen tool would paint a dot there
-    # and the screenshot would then read the pen color instead of the stroke). macOS only.
-    import threading
+def trace_at(x, y, quit_):
+    """Trace the stroke under screen point (x, y). Returns False if Esc was pressed mid-drawing."""
     import Quartz
-    from pynput import mouse
-    pos, picked = [], threading.Event()
 
-    def intercept(event_type, event):
-        if picked.is_set():
-            return event  # after the pick, let everything through, including our own synthetic presses
-        if event_type == Quartz.kCGEventLeftMouseDown:
-            p = Quartz.CGEventGetLocation(event)
-            pos.append((int(p.x), int(p.y)))
-            return None
-        if event_type == Quartz.kCGEventLeftMouseUp and pos:
-            picked.set()
-            return None
-        return event
-
-    # Not stopped on purpose: pynput's stop() leaves the event tap installed but unserviced, which kept
-    # swallowing our mouse-downs (cursor moved, nothing drew). Its daemon thread dies with the script.
-    mouse.Listener(darwin_intercept=intercept).start()
-    picked.wait()
-    return pos[0]
-
-
-def main():
-    print("Click vào 1 điểm màu trên màn hình... (đưa chuột vào góc màn hình để dừng khẩn cấp)")
-    x, y = wait_click()
     shot = pyautogui.screenshot()
     scale = shot.width / pyautogui.size().width  # Retina: screenshot pixels = 2x screen points
     step_px = max(1, round(STEP * scale))
@@ -254,14 +228,11 @@ def main():
     color = shot.getpixel(start_px)
     if not is_ink(color, bg.getpixel(start_px)):
         print(f"Màu {color} lẫn vào nền xung quanh, hãy click đúng vào nét chữ.")
-        return
+        return True
     cells = bfs(shot, start_px, step=step_px, bg=bg)
     lines = [[(x + i * step_px / scale, y + j * step_px / scale) for i, j in smooth(extend_tips(l, cells))]
              for l in strokes(thin(cells), cells)]
-    print(f"Màu {color} tại {(x, y)}: {len(cells)} điểm -> {len(lines)} nét. Bấm Esc để dừng.")
-
-    import Quartz
-    from pynput import keyboard
+    print(f"Màu {color} tại {(x, y)}: {len(cells)} điểm -> {len(lines)} nét.")
 
     DOWN, DRAG, UP = Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseDragged, Quartz.kCGEventLeftMouseUp
 
@@ -275,9 +246,6 @@ def main():
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
         time.sleep(pyautogui.PAUSE)
 
-    stop = []
-    keys = keyboard.Listener(on_press=lambda k: stop.append(1) if k == keyboard.Key.esc else None)
-    keys.start()
     try:
         # The picking click was swallowed, so the app under the stroke may still be in the background,
         # and macOS spends the first press on a background window just bringing it forward.
@@ -291,19 +259,64 @@ def main():
             post(DOWN, *line[0])
             time.sleep(0.03)  # let the app register the press before the drag starts
             for p in line[1:]:
-                if stop:
-                    print("Đã dừng (Esc).")
-                    return
+                if quit_.is_set():
+                    return False
                 pyautogui.failSafeCheck()
                 post(DRAG, *p)
             post(UP, *line[-1])
     finally:
         pyautogui.mouseUp()
-        keys.stop()
     name = time.strftime("trace_%H%M%S.svg")
     with open(name, "w") as f:
         f.write(to_svg(lines))
     print(f"Xong. Đã lưu {name}")
+    return True
+
+
+def main():
+    """Loop: click a stroke -> it gets traced -> click the next one. Esc quits, also mid-drawing."""
+    import threading
+    import Quartz
+    from pynput import keyboard, mouse
+
+    armed, picked, quit_ = threading.Event(), threading.Event(), threading.Event()
+    pos = []
+
+    def intercept(event_type, event):
+        # While armed, swallow the picking click so it never reaches the app (a pen tool would paint a
+        # dot there and the screenshot would read the pen color instead of the stroke). Otherwise let
+        # everything through, including our own synthetic presses.
+        if not armed.is_set():
+            return event
+        if event_type == Quartz.kCGEventLeftMouseDown:
+            p = Quartz.CGEventGetLocation(event)
+            pos[:] = [(int(p.x), int(p.y))]
+            return None
+        if event_type == Quartz.kCGEventLeftMouseUp and pos:
+            armed.clear()
+            picked.set()
+            return None
+        return event
+
+    # Both started once and never stopped: pynput's stop() leaves the event tap installed but
+    # unserviced, which swallowed our mouse-downs. Their daemon threads die with the script.
+    mouse.Listener(darwin_intercept=intercept).start()
+    keyboard.Listener(on_press=lambda k: quit_.set() if k == keyboard.Key.esc else None).start()
+
+    print("Bấm Esc bất cứ lúc nào để thoát (hoặc đưa chuột vào góc màn hình).")
+    while True:
+        print("\nClick vào nét chữ cần đồ...")
+        pos.clear()
+        picked.clear()
+        armed.set()
+        while not picked.wait(0.1):
+            if quit_.is_set():
+                armed.clear()
+                print("Đã thoát (Esc).")
+                return
+        if not trace_at(*pos[0], quit_):
+            print("Đã dừng giữa chừng và thoát (Esc).")
+            return
 
 
 def self_test():
