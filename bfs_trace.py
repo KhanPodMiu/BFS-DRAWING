@@ -17,7 +17,7 @@ STEP = 2            # grid step in screen points (smaller = denser stroke, slowe
 CANVAS_MIN, CANVAS_MAX = 50, 240
 LOW = 0.6           # ink this fraction of a box's cut still counts when it hangs onto full-strength ink
 NORM = 6            # a word is resampled so its strokes are about this many cells thick before tracing
-SPEED = 120         # pen speed in screen points per second; apps round off the corners of fast strokes
+SPEED = 240         # pen speed in screen points per second; apps round off the corners of fast strokes
 
 pyautogui.FAILSAFE = True  # slam the mouse into a screen corner to abort
 pyautogui.PAUSE = 0.003  # delay after each press / release / pyautogui move; the drag itself is paced by SPEED
@@ -394,7 +394,7 @@ def lines_at(shot, bg, x, y, step_px, scale):
     return to_lines(bfs(shot, start_px, step=step_px, bg=bg), start_px, step_px, scale)
 
 
-def draw(lines, quit_):
+def draw(lines, quit_, paused):
     """Drag the mouse along the pen paths. Returns False if a was pressed mid-drawing."""
     import Quartz
 
@@ -427,6 +427,16 @@ def draw(lines, quit_):
             for prev, p in zip(line, line[1:]):
                 if quit_.is_set():
                     return False
+                if paused.is_set():
+                    # lift the pen while paused so moving the mouse paints nothing, then put it back down here
+                    post(UP, *prev)
+                    while paused.is_set() and not quit_.is_set():
+                        time.sleep(0.05)
+                    if quit_.is_set():
+                        return False
+                    pyautogui.moveTo(*prev)
+                    post(DOWN, *prev)
+                    time.sleep(0.03)
                 pyautogui.failSafeCheck()
                 post(DRAG, *p, math.dist(prev, p) / SPEED)
             post(UP, *line[-1])
@@ -475,12 +485,12 @@ class Overlay:
 
 def main():
     """Loop: OCR the annotated image -> outline the words -> click a word and it gets traced whole
-    (a click on ink outside every box traces just that stroke). Pressing a quits, also mid-drawing."""
+    (a click on ink outside every box traces just that stroke). Pressing a quits, m pauses / resumes, also mid-drawing."""
     import threading
     import Quartz
     from pynput import keyboard, mouse
 
-    armed, picked, quit_, rescan = threading.Event(), threading.Event(), threading.Event(), threading.Event()
+    armed, picked, quit_, rescan, paused = (threading.Event() for _ in range(5))
     pos, canvas_pt = [], []
 
     def intercept(event_type, event):
@@ -507,6 +517,8 @@ def main():
         c = getattr(k, "char", None)
         if c in ("a", "A"):
             quit_.set()
+        elif c in ("m", "M"):
+            paused.clear() if paused.is_set() else paused.set()
         elif c in ("r", "R"):
             rescan.set()
 
@@ -516,7 +528,7 @@ def main():
     keyboard.Listener(on_press=on_key).start()
     overlay = Overlay()
 
-    print("Phím a: thoát (hoặc đưa chuột vào góc màn hình). Phím r: quét lại (sau khi zoom / kéo ảnh).")
+    print("Phím a: thoát (hoặc đưa chuột vào góc màn hình). Phím m: tạm dừng / chạy tiếp. Phím r: quét lại (sau khi zoom / kéo ảnh).")
     while True:
         overlay.show([])  # our boxes must not end up in the screenshot
         overlay.pump(0.1)
@@ -556,7 +568,7 @@ def main():
         else:
             lines = lines_at(shot, background(shot, 8 * step_px), x, y, step_px, scale)
             print(f"Đồ nét tại {(x, y)}: {len(lines)} nét.")
-        if not draw(lines, quit_):
+        if not draw(lines, quit_, paused):
             print("Đã dừng giữa chừng và thoát (a).")
             return
         overlay.pump(0.3)  # let the app paint the new strokes before the next scan
